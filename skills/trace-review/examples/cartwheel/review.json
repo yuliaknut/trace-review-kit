@@ -1,0 +1,10 @@
+{
+  "title": "Cartwheel trace review",
+  "review_title": "Your review",
+  "fields": [
+    {"key": "scenario_valid", "type": "flag", "label": "scenario valid", "label_off": "scenario invalid", "default": true, "hint": "click to flag a defective scenario"},
+    {"key": "scenario_change", "type": "text", "label": "What should change in the scenario", "placeholder": "e.g. the expectation assumes a refund the request never made", "show_when": {"key": "scenario_valid", "equals": false}},
+    {"key": "confirmed_failure", "type": "yesno", "label": "Confirmed failure?", "hint": "the behavior conflicts with the expected outcome or SPEC.md"},
+    {"key": "note", "type": "textarea", "label": "Annotation · what you notice, and the evidence", "rows": 6, "placeholder": "What did the agent do, and does it conflict with the expected outcome? Name the evidence."}
+  ]
+}

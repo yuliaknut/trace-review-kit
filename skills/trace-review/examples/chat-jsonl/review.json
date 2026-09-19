@@ -1,0 +1,8 @@
+{
+  "title": "Conversation review",
+  "fields": [
+    {"key": "verdict", "type": "select", "label": "Verdict", "options": ["pass", "fail", "unsure"]},
+    {"key": "failure_modes", "type": "checklist", "label": "Failure modes present", "options": ["wrong fact", "ignored instruction", "unnecessary tool call", "claimed success before tool result", "tone"]},
+    {"key": "note", "type": "textarea", "label": "Open coding note", "rows": 6, "placeholder": "What did you notice? Quote the evidence."}
+  ]
+}

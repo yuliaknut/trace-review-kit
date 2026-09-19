@@ -1,0 +1,18 @@
+{
+  "name": "trace-review-kit",
+  "displayName": "Trace review kit",
+  "version": "0.1.0",
+  "description": "A reusable one-trace-at-a-time review interface for AI agent error analysis: page, theme, server, exporter, and a skill that adapts it to any project.",
+  "author": {
+    "name": "yuliaknut"
+  },
+  "keywords": [
+    "evals",
+    "error-analysis",
+    "annotation",
+    "traces",
+    "review"
+  ],
+  "repository": "https://github.com/yuliaknut/trace-review-kit",
+  "license": "MIT"
+}
