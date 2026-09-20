@@ -161,6 +161,8 @@ function renderField(f, rec) {
   if (f.type === 'flag') { const def = f.default !== false; const on = v === null || v === undefined ? def : v;
     return `<div class="field row" data-key="${esc(f.key)}"><button class="flag-toggle ${on ? 'on' : 'off'}" data-flag="${esc(f.key)}">${on ? '✓ ' : '✗ '}${esc(on ? (f.label_on || f.label) : (f.label_off || 'not ' + f.label))}</button>${f.hint ? `<span class="hint" style="margin:0">${esc(f.hint)}</span>` : ''}</div>`; }
   if (f.type === 'yesno') return `<div class="field">${lbl}<span class="seg" data-seg="${esc(f.key)}"><button class="yes ${v === true ? 'on' : ''}" data-v="true">yes</button><button class="no ${v === false ? 'on' : ''}" data-v="false">no</button></span></div>`;
+  // passfail stores a boolean "is a failure": pass = false, fail = true. Click the active one again to clear.
+  if (f.type === 'passfail') return `<div class="field">${lbl}<span class="seg" data-seg="${esc(f.key)}"><button class="yes ${v === false ? 'on' : ''}" data-v="false">pass</button><button class="no ${v === true ? 'on' : ''}" data-v="true">fail</button></span></div>`;
   if (f.type === 'select') return `<div class="field">${lbl}<span class="seg" data-select="${esc(f.key)}">${(f.options || []).map(o => `<button class="pick ${v === o ? 'on' : ''}" data-v="${esc(o)}">${esc(o)}</button>`).join('')}</span></div>`;
   if (f.type === 'checklist') { const set = new Set(Array.isArray(v) ? v : []);
     return `<div class="field">${lbl}<div class="checks" data-checks="${esc(f.key)}">${(f.options || []).map(o => `<label><input type="checkbox" value="${esc(o)}" ${set.has(o) ? 'checked' : ''}> ${esc(o)}</label>`).join('')}</div></div>`; }

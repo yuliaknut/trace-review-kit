@@ -106,7 +106,7 @@ Write `review/review.json`. The decision panel is generated from it:
   "fields": [
     {"key": "scenario_valid", "type": "flag", "label": "scenario valid", "label_off": "scenario invalid", "default": true, "hint": "click to flag a defective scenario"},
     {"key": "scenario_change", "type": "text", "label": "What should change", "show_when": {"key": "scenario_valid", "equals": false}},
-    {"key": "confirmed_failure", "type": "yesno", "label": "Confirmed failure?"},
+    {"key": "confirmed_failure", "type": "passfail", "label": "Verdict"},
     {"key": "failure_modes", "type": "checklist", "label": "Failure modes", "options": ["wrong fact", "ignored instruction"]},
     {"key": "verdict", "type": "select", "label": "Verdict", "options": ["pass", "fail", "unsure"]},
     {"key": "note", "type": "textarea", "label": "Annotation", "rows": 6}
@@ -115,7 +115,8 @@ Write `review/review.json`. The decision panel is generated from it:
 ```
 
 Field types: `flag` (one button, holds its default until clicked, so the common case costs no
-clicks), `yesno`, `select`, `checklist` (stored as a list), `text`, `textarea`. `show_when`
+clicks), `yesno`, `passfail` (green pass stores `false`, red fail stores `true`, so the key reads
+as "is a failure"), `select`, `checklist` (stored as a list), `text`, `textarea`. `show_when`
 hides a field until another field has the given value. Put the free-text note last; it is where
 the evidence goes.
 

@@ -64,7 +64,7 @@ def main() -> None:
     args.out.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows), encoding="utf-8")
     print(f"wrote {len(rows)} rows to {args.out} ({skipped} unreviewed skipped)")
     for f in fields:
-        if f.get("type") in ("flag", "yesno", "select"):
+        if f.get("type") in ("flag", "yesno", "passfail", "select"):
             print(f"  {f['key']}: {dict(Counter(str(r.get(f['key'])) for r in rows))}")
 
 
