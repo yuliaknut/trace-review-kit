@@ -104,9 +104,12 @@ Write `review/review.json`. The decision panel is generated from it:
 {
   "title": "Cartwheel trace review",
   "fields": [
-    {"key": "scenario_valid", "type": "flag", "label": "scenario valid", "label_off": "scenario invalid", "default": true, "hint": "click to flag a defective scenario"},
-    {"key": "scenario_change", "type": "text", "label": "What should change", "show_when": {"key": "scenario_valid", "equals": false}},
-    {"key": "confirmed_failure", "type": "passfail", "label": "Verdict"},
+    {"key": "verdict", "type": "verdict", "label": "Verdict", "options": [
+       {"value": "pass", "color": "green", "sets": {"scenario_valid": true, "confirmed_failure": false}},
+       {"value": "fail", "color": "red", "sets": {"scenario_valid": true, "confirmed_failure": true}},
+       {"value": "invalid", "label": "invalid scenario", "color": "orange", "sets": {"scenario_valid": false, "confirmed_failure": false}}]},
+    {"key": "scenario_change", "type": "text", "label": "What should change", "show_when": {"key": "verdict", "equals": "invalid"}},
+    {"key": "scenario_valid", "type": "flag", "label": "scenario valid", "default": true},
     {"key": "failure_modes", "type": "checklist", "label": "Failure modes", "options": ["wrong fact", "ignored instruction"]},
     {"key": "verdict", "type": "select", "label": "Verdict", "options": ["pass", "fail", "unsure"]},
     {"key": "note", "type": "textarea", "label": "Annotation", "rows": 6}
@@ -114,9 +117,15 @@ Write `review/review.json`. The decision panel is generated from it:
 }
 ```
 
-Field types: `flag` (one button, holds its default until clicked, so the common case costs no
-clicks), `yesno`, `passfail` (green pass stores `false`, red fail stores `true`, so the key reads
-as "is a failure"), `select`, `checklist` (stored as a list), `text`, `textarea`. `show_when`
+Field types: `verdict` (one segmented control; each option has a colour and a `sets` map of
+underlying fields it writes, so one click records several facts and nothing is inferred from
+silence; the dots and the "decided" count follow it), `flag` (one button, holds its default until
+clicked, so the common case costs no clicks; use it only where a default is honest), `yesno`,
+`passfail` (green pass stores `false`, red fail stores `true`, so the key reads as "is a
+failure"), `select`, `checklist` (stored as a list), `text`, `textarea`.
+
+Prefer `verdict` when the review's output is a decision the deliverable will count. A reviewer
+who only wrote a note has not decided, and the export should say so rather than fill in a default. `show_when`
 hides a field until another field has the given value. Put the free-text note last; it is where
 the evidence goes.
 

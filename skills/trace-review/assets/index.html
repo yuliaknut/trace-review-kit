@@ -82,6 +82,8 @@ function recFor(s) {
 const inlineFor = (s) => state.annotations.filter(x => x.kind === 'inline' && x.item_id === s.id);
 const fieldSet = (v) => !(v === null || v === undefined || v === '' || (Array.isArray(v) && !v.length));
 function isReviewed(s) { const a = state.annotations.find(x => x.kind === 'item' && x.item_id === s.id); return !!((a && Object.values(a.fields || {}).some(fieldSet)) || inlineFor(s).length); }
+const verdictField = () => state.config.fields.find(f => f.type === 'verdict');
+function verdictOpt(s) { const f = verdictField(); if (!f) return null; const a = state.annotations.find(x => x.kind === 'item' && x.item_id === s.id); const v = a && a.fields ? a.fields[f.key] : null; return (f.options || []).find(o => o.value === v) || null; }
 function isFlagged(s) { const a = state.annotations.find(x => x.kind === 'item' && x.item_id === s.id); if (!a) return false;
   return state.config.fields.some(f => f.type === 'flag' && a.fields[f.key] !== undefined && a.fields[f.key] !== null && a.fields[f.key] !== (f.default !== false)); }
 function scheduleSave() { state.dirty = true; setStatus(); clearTimeout(state.saveTimer); state.saveTimer = setTimeout(save, 500); }
@@ -92,8 +94,11 @@ async function save() {
   renderDots();
 }
 function setStatus(err) {
-  const el = document.getElementById('status'); const done = state.samples.filter(isReviewed).length;
-  el.innerHTML = err ? `<span class="saved dirty">${esc(err)}</span>` : `${done} of ${state.samples.length} reviewed · <span class="saved ${state.dirty ? 'dirty' : 'ok'}">${state.dirty ? 'saving…' : 'saved ✓'}</span>`;
+  const el = document.getElementById('status');
+  let summary;
+  if (verdictField()) { const decided = state.samples.filter(verdictOpt).length; const notesOnly = state.samples.filter(s => !verdictOpt(s) && isReviewed(s)).length; summary = `${decided} of ${state.samples.length} decided${notesOnly ? ` · ${notesOnly} note only` : ''}`; }
+  else summary = `${state.samples.filter(isReviewed).length} of ${state.samples.length} reviewed`;
+  el.innerHTML = err ? `<span class="saved dirty">${esc(err)}</span>` : `${summary} · <span class="saved ${state.dirty ? 'dirty' : 'ok'}">${state.dirty ? 'saving…' : 'saved ✓'}</span>`;
 }
 
 /* ---------- navigation ---------- */
@@ -111,7 +116,8 @@ function renderDots() {
   const box = document.getElementById('dots'); box.innerHTML = '';
   state.samples.forEach((s, i) => {
     const d = document.createElement('span');
-    d.className = 'dot' + (isFlagged(s) ? ' flagged' : isReviewed(s) ? ' done' : '') + (i === state.idx ? ' current' : '');
+    const vo = verdictOpt(s);
+    d.className = 'dot' + (vo ? ' c-' + (vo.color || 'blue') : isFlagged(s) ? ' flagged' : isReviewed(s) ? ' done' : '') + (i === state.idx ? ' current' : '');
     d.title = s.id; d.onclick = () => go(i); box.appendChild(d);
   });
 }
@@ -163,6 +169,8 @@ function renderField(f, rec) {
   if (f.type === 'yesno') return `<div class="field">${lbl}<span class="seg" data-seg="${esc(f.key)}"><button class="yes ${v === true ? 'on' : ''}" data-v="true">yes</button><button class="no ${v === false ? 'on' : ''}" data-v="false">no</button></span></div>`;
   // passfail stores a boolean "is a failure": pass = false, fail = true. Click the active one again to clear.
   if (f.type === 'passfail') return `<div class="field">${lbl}<span class="seg" data-seg="${esc(f.key)}"><button class="yes ${v === false ? 'on' : ''}" data-v="false">pass</button><button class="no ${v === true ? 'on' : ''}" data-v="true">fail</button></span></div>`;
+  // verdict: one segmented control whose options each set several underlying fields; click the active one again to clear
+  if (f.type === 'verdict') return `<div class="field">${lbl}<span class="seg" data-verdict="${esc(f.key)}">${(f.options || []).map(o => `<button class="c-${esc(o.color || 'blue')} ${v === o.value ? 'on' : ''}" data-v="${esc(o.value)}">${esc(o.label || o.value)}</button>`).join('')}</span></div>`;
   if (f.type === 'select') return `<div class="field">${lbl}<span class="seg" data-select="${esc(f.key)}">${(f.options || []).map(o => `<button class="pick ${v === o ? 'on' : ''}" data-v="${esc(o)}">${esc(o)}</button>`).join('')}</span></div>`;
   if (f.type === 'checklist') { const set = new Set(Array.isArray(v) ? v : []);
     return `<div class="field">${lbl}<div class="checks" data-checks="${esc(f.key)}">${(f.options || []).map(o => `<label><input type="checkbox" value="${esc(o)}" ${set.has(o) ? 'checked' : ''}> ${esc(o)}</label>`).join('')}</div></div>`; }
@@ -219,6 +227,15 @@ function render() {
   main.querySelectorAll('[data-text]').forEach(el => el.addEventListener('input', (e) => { rec.fields[el.dataset.text] = e.target.value; touch(); }));
   main.querySelectorAll('[data-flag]').forEach(b => b.onclick = () => { const f = state.config.fields.find(x => x.key === b.dataset.flag); const def = f.default !== false; const cur = rec.fields[f.key] === null || rec.fields[f.key] === undefined ? def : rec.fields[f.key]; rec.fields[f.key] = cur === def ? !def : null; touch(); render(); const first = document.querySelector('[data-text]:not([id^="f-note"])'); if (rec.fields[f.key] !== null && first) first.focus(); });
   main.querySelectorAll('[data-seg]').forEach(seg => seg.querySelectorAll('button').forEach(b => b.onclick = () => { const k = seg.dataset.seg, v = b.dataset.v === 'true'; rec.fields[k] = rec.fields[k] === v ? null : v; seg.querySelectorAll('button').forEach(x => x.classList.toggle('on', rec.fields[k] !== null && (x.dataset.v === 'true') === rec.fields[k])); touch(); }));
+  main.querySelectorAll('[data-verdict]').forEach(seg => seg.querySelectorAll('button').forEach(b => b.onclick = () => {
+    const f = state.config.fields.find(x => x.key === seg.dataset.verdict); const cur = rec.fields[f.key];
+    const clear = cur === b.dataset.v; const opt = (f.options || []).find(o => o.value === b.dataset.v) || {};
+    for (const o of f.options || []) for (const k of Object.keys(o.sets || {})) rec.fields[k] = null;   // reset every field any option controls
+    rec.fields[f.key] = clear ? null : b.dataset.v;
+    if (!clear) Object.assign(rec.fields, opt.sets || {});
+    touch(); render();
+    if (!clear) { const first = document.querySelector('[data-text]:not([id="f-note"])'); if (first) first.focus(); }
+  }));
   main.querySelectorAll('[data-select]').forEach(seg => seg.querySelectorAll('button').forEach(b => b.onclick = () => { const k = seg.dataset.select; rec.fields[k] = rec.fields[k] === b.dataset.v ? null : b.dataset.v; seg.querySelectorAll('button').forEach(x => x.classList.toggle('on', x.dataset.v === rec.fields[k])); touch(); }));
   main.querySelectorAll('[data-checks]').forEach(box => box.querySelectorAll('input').forEach(cb => cb.onchange = () => { rec.fields[box.dataset.checks] = [...box.querySelectorAll('input:checked')].map(x => x.value); touch(); }));
   main.querySelectorAll('.note').forEach(card => {

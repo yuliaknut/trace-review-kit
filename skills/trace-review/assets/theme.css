@@ -21,7 +21,8 @@ kbd { font-family: var(--mono); font-size: 12.5px; background: var(--bg); border
 .nav .counter { font-family: var(--mono); font-size: 15px; color: var(--fg-strong); min-width: 64px; text-align: center; }
 .dots { display: flex; gap: 3px; flex-wrap: wrap; margin-left: auto; max-width: 46vw; }
 .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--line); cursor: pointer; border: 1px solid transparent; }
-.dot.done { background: var(--green); } .dot.flagged { background: var(--red); } .dot.current { border-color: var(--fg-strong); transform: scale(1.35); }
+.dot.done { background: var(--blue); } .dot.flagged { background: var(--red); }
+.dot.c-green { background: var(--green); } .dot.c-red { background: var(--red); } .dot.c-orange { background: var(--orange); } .dot.c-yellow { background: var(--yellow); } .dot.c-blue { background: var(--blue); } .dot.c-purple { background: var(--purple); } .dot.current { border-color: var(--fg-strong); transform: scale(1.35); }
 .status { font-size: 13.5px; color: var(--fg-muted); min-width: 110px; text-align: right; }
 
 /* item header */
@@ -100,6 +101,8 @@ textarea:focus, input:focus { outline: none; border-color: var(--blue); box-shad
 .seg button + button { border-left: 1px solid var(--line); }
 .seg button.on.yes { background: #1f4a25; color: #6bd07a; } .seg button.on.no { background: #4d1f1c; color: #ff8a80; }
 .seg button.on.pick { background: #1f3a5a; color: #8cc4ff; }
+.seg button.on.c-green { background: #1f4a25; color: #6bd07a; } .seg button.on.c-red { background: #4d1f1c; color: #ff8a80; } .seg button.on.c-orange { background: #4a3413; color: #f0a24a; }
+.seg button.on.c-yellow { background: #4a3f13; color: #e6c04a; } .seg button.on.c-blue { background: #1f3a5a; color: #8cc4ff; } .seg button.on.c-purple { background: #3a2a5a; color: #c4a8ff; }
 .flag-toggle { border-radius: 6px; padding: 4px 12px; font-size: 14px; }
 .flag-toggle.on { background: #1f4a25; color: #6bd07a; border-color: #2f6b37; }
 .flag-toggle.off { background: #4d1f1c; color: #ff8a80; border-color: #7a2e29; }
