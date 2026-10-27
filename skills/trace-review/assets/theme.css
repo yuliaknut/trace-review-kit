@@ -16,12 +16,18 @@ kbd { font-family: var(--mono); font-size: 12.5px; background: var(--bg); border
 
 /* top bar */
 .topbar { position: sticky; top: 0; z-index: 5; display: flex; align-items: center; gap: 14px; padding: 10px 20px; background: var(--panel); border-bottom: 1px solid var(--line); }
-.topbar h1 { font-size: 17px; font-weight: 600; color: var(--fg-strong); margin: 0 18px 0 0; }
+.topbar h1 { font-size: 17px; font-weight: 600; color: var(--fg-strong); margin: 0 18px 0 0; white-space: nowrap; }
 .nav { display: flex; align-items: center; gap: 8px; }
-.nav .counter { font-family: var(--mono); font-size: 15px; color: var(--fg-strong); min-width: 64px; text-align: center; }
+.nav .counter { font-family: var(--mono); font-size: 15px; color: var(--fg-strong); min-width: 10ch; white-space: nowrap; text-align: center; }
 .dots { display: flex; gap: 3px; flex-wrap: wrap; margin-left: auto; max-width: 46vw; }
-.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--line); cursor: pointer; border: 1px solid transparent; }
-.dot.done { background: var(--blue); } .dot.flagged { background: var(--red); }
+/* dots are dim until the item has been on screen long enough to count as seen; the current one is always full */
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--line); cursor: pointer; border: 1px solid transparent; opacity: .4; transition: opacity .25s; }
+.dot.seen, .dot.current { opacity: 1; }
+.dot.done { background: var(--blue); }
+/* ring = this item needs your attention (set by the adapter with dot_class: "ring"); one style, one colour */
+.dot.ring { box-shadow: 0 0 0 2px var(--blue); opacity: 1; }
+.dots { align-items: center; }
+.dots .gap { width: 1.5px; height: 11px; flex: none; border-radius: 1px; background: var(--line); opacity: .75; }
 .dot.c-green { background: var(--green); } .dot.c-red { background: var(--red); } .dot.c-orange { background: var(--orange); } .dot.c-yellow { background: var(--yellow); } .dot.c-blue { background: var(--blue); } .dot.c-purple { background: var(--purple); } .dot.current { border-color: var(--fg-strong); transform: scale(1.35); }
 .status { font-size: 13.5px; color: var(--fg-muted); min-width: 110px; text-align: right; }
 
@@ -54,19 +60,50 @@ kbd { font-family: var(--mono); font-size: 12.5px; background: var(--bg); border
 .msg.assistant { border-left-color: var(--green); } .msg.assistant .role { color: var(--green); }
 .msg.observation { border-left-color: var(--fg-muted); color: var(--fg-muted); } .msg.observation .role { color: var(--fg-muted); }
 .msg.error { border-left-color: var(--red); } .msg.error .role { color: var(--red); }
+.msg .txt { display: block; }
+
+/* steps layout: one step = the agent's narration plus the tool calls it made, nested under the user message on a thin rail;
+   narration keeps full opacity but loses its card so the user message and the reply stay the loudest blocks */
+.step { margin: 0 0 18px 24px; padding: 0 0 0 14px; border-left: 2px solid var(--line); }
+.step .msg.assistant { border: 0; border-radius: 0; background: transparent; padding: 0 0 6px; margin-bottom: 0; }
+.step .msg.assistant .role::after { content: " · narration"; color: var(--fg-muted); font-weight: 400; letter-spacing: 0; text-transform: none; }
+.step .tool { margin-bottom: 8px; } .step .tool:last-child { margin-bottom: 0; }
+.msg.reply { border-left-width: 6px; margin-top: 26px; }
+.msg.reply .role::after { content: " · reply"; color: var(--fg-muted); font-weight: 400; letter-spacing: 0; text-transform: none; }
+.turn { display: flex; align-items: center; gap: 10px; margin: 18px 0 10px; color: var(--fg-muted); font-size: 13px; }
+.turn::before, .turn::after { content: ""; flex: 1; border-top: 1px solid var(--line); }
+.turn code { background: var(--panel); padding: 1px 6px; border-radius: 4px; }
+
+/* summary table under the top bar (config.summary) */
+details.summary { margin: 0; padding: 8px 20px 10px; background: var(--panel); border-bottom: 1px solid var(--line); font-size: 13px; }
+details.summary > summary { cursor: pointer; color: var(--fg-muted); font-weight: 600; letter-spacing: .04em; text-transform: uppercase; font-size: 12px; margin-bottom: 6px; }
+details.summary table { border-collapse: collapse; font-family: var(--mono); font-size: 12.5px; }
+details.summary th { color: var(--fg-muted); font-weight: 400; text-align: left; padding: 2px 14px 2px 0; }
+details.summary td { color: var(--fg); padding: 2px 14px 2px 0; }
+details.summary tr.cur td { color: var(--fg-strong); font-weight: 600; }
+details.summary .snote { color: var(--fg-muted); margin-top: 6px; font-size: 12.5px; }
+.toast { position: fixed; left: 20px; bottom: 20px; z-index: 6; background: var(--panel-2); color: var(--fg-strong); border: 1px solid var(--line); border-left: 4px solid var(--blue); border-radius: 6px; padding: 8px 14px; box-shadow: 0 2px 12px rgba(0,0,0,.5); display: none; font-size: 14px; }
 
 /* tool cards: a click anywhere on the card shows or hides the result */
 .tool { border: 1px solid var(--line); border-left: 4px solid var(--purple); border-radius: 6px; background: var(--panel); margin-bottom: 10px; overflow: hidden; cursor: pointer; }
 .tool:hover { border-color: #566271; border-left-color: var(--purple); }
+.tool.err { border-left-color: var(--red); } .tool.err .thead .tag { color: var(--red); }
 .tool .thead { display: flex; align-items: center; gap: 8px; padding: 7px 12px; background: var(--panel-2); font-family: var(--mono); font-size: 14px; color: var(--fg-strong); user-select: none; }
+.tool .thead .tname { user-select: text; cursor: text; }   /* the call itself is evidence, e.g. "the agent called escalate" */
 .tool .thead .tag { color: var(--purple); font-weight: 700; font-family: var(--sans); font-size: 12.5px; letter-spacing: .04em; }
 .tool .thead .sum { margin-left: auto; color: var(--fg-muted); font-weight: 400; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 55%; }
 .tool .thead .sum .ok { color: var(--green); } .tool .thead .sum .err { color: var(--red); }
 .tool .thead::after { content: "▸"; color: var(--fg-muted); font-family: var(--sans); margin-left: 6px; }
 .tool.open .thead::after { content: "▾"; }
 .tool pre { margin: 0; padding: 8px 12px; overflow-x: auto; color: var(--fg); cursor: text; }
-.tool pre.result { display: none; border-top: 1px solid var(--line); }
-.tool.open pre.result { display: block; }
+.tool pre.result, .tool .rbody { display: none; border-top: 1px solid var(--line); }
+.tool.open pre.result, .tool.open .rbody { display: block; }
+/* readable result blocks (tool_result.items or body_md): one block per retrieved document */
+.tool .rbody { padding: 8px 12px; cursor: text; white-space: pre-wrap; word-break: break-word; }
+.tool .rres { padding: 6px 0; border-bottom: 1px dashed var(--line); } .tool .rres:last-child { border-bottom: 0; }
+.tool .rres .pid { font-family: var(--mono); color: var(--fg-strong); } .tool .rres .score { color: var(--fg-muted); font-size: 13px; margin-left: 8px; }
+.tool .rres .snip { color: var(--fg-muted); font-size: 13.5px; }
+.tool .rbody h4 { margin: 0 0 6px; color: var(--fg-strong); font-size: 15px; }
 
 /* inline notes */
 mark.hl { background: rgba(198,144,38,.28); color: inherit; border-bottom: 2px solid var(--yellow); border-radius: 2px; padding: 0 1px; }
@@ -86,6 +123,10 @@ mark.hl.focus { background: rgba(198,144,38,.5); }
 /* side cards and form controls */
 .card { border: 1px solid var(--line); border-radius: 6px; background: var(--panel); flex: none; }
 .card h2 { margin: 0; padding: 9px 12px; font-size: 12.5px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--fg-muted); border-bottom: 1px solid var(--line); background: var(--panel-2); border-radius: 6px 6px 0 0; }
+.card h2 .sub { font-weight: 400; letter-spacing: 0; text-transform: none; color: var(--fg-muted); }
+.card h2 .tgl { margin-left: auto; color: var(--fg-muted); font-weight: 400; cursor: pointer; }
+.card h2.clickable { cursor: pointer; }
+.card.collapsed .body { display: none; } .card.collapsed h2 { border-bottom: 0; border-radius: 6px; }
 .card .body { padding: 10px 12px; }
 .kv { display: grid; grid-template-columns: 104px 1fr; gap: 5px 8px; font-size: 14px; }
 .kv .k { color: var(--fg-muted); } .kv .v { color: var(--fg-strong); word-break: break-word; }
@@ -103,9 +144,6 @@ textarea:focus, input:focus { outline: none; border-color: var(--blue); box-shad
 .seg button.on.pick { background: #1f3a5a; color: #8cc4ff; }
 .seg button.on.c-green { background: #1f4a25; color: #6bd07a; } .seg button.on.c-red { background: #4d1f1c; color: #ff8a80; } .seg button.on.c-orange { background: #4a3413; color: #f0a24a; }
 .seg button.on.c-yellow { background: #4a3f13; color: #e6c04a; } .seg button.on.c-blue { background: #1f3a5a; color: #8cc4ff; } .seg button.on.c-purple { background: #3a2a5a; color: #c4a8ff; }
-.flag-toggle { border-radius: 6px; padding: 4px 12px; font-size: 14px; }
-.flag-toggle.on { background: #1f4a25; color: #6bd07a; border-color: #2f6b37; }
-.flag-toggle.off { background: #4d1f1c; color: #ff8a80; border-color: #7a2e29; }
 .checks { display: flex; flex-direction: column; gap: 4px; } .checks label { display: flex; gap: 8px; align-items: flex-start; font-size: 14.5px; color: var(--fg-strong); cursor: pointer; }
 .checks input { margin-top: 5px; accent-color: var(--blue); }
 .saved { font-size: 13.5px; color: var(--fg-muted); } .saved.dirty { color: var(--yellow); } .saved.ok { color: var(--green); }

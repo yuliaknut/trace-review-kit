@@ -1,0 +1,19 @@
+{
+  "title": "Conversations the monitor flagged",
+  "store_key": "monitor-week-12",
+  "conversation_layout": "steps",
+  "fields": [
+    {"key": "should_pass", "type": "verdict", "label": "Is this a real failure?", "options": [
+      {"value": "fail", "label": "yes: confirmed failure", "color": "red", "sets": {}},
+      {"value": "pass", "label": "no: the behavior was justified", "color": "green", "sets": {}},
+      {"value": "unclear", "label": "unclear", "color": "yellow", "sets": {}}]},
+    {"key": "reason", "type": "textarea", "label": "Why", "rows": 5}
+  ],
+  "summary": {
+    "title": "Monitor results by period",
+    "columns": ["period", "conversations", "random flagged", "raw rate", "corrected", "95% range", "threshold", "crossed"],
+    "rows": [["before", "50", "1 of 10", "0.10", "0.019", "0.00 to 0.33", "0.25", "no"],
+             ["after", "50", "1 of 10", "0.10", "0.019", "0.00 to 0.33", "0.25", "no"]],
+    "note": "Corrected = Rogan-Gladen on the random-sample verdicts using the frozen judge's test results."
+  }
+}

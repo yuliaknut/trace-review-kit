@@ -1,5 +1,6 @@
 {
   "title": "Cartwheel trace review",
+  "store_key": "cartwheel-final",
   "review_title": "Your review",
   "fields": [
     {"key": "verdict", "type": "verdict", "label": "Verdict", "hint": "pass or fail also records the scenario as valid; pick invalid when the expectation itself is wrong",

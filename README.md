@@ -4,8 +4,14 @@ A one-trace-at-a-time review interface for error analysis of AI agents, packaged
 plugin. The page, theme, server, and exporter are generic; a skill teaches a coding agent to write
 the two project-specific pieces, an adapter from the project's traces and a config of decision fields.
 
-Built during the "Evaluating and Improving AI Agents" course for the Cartwheel support agent, then
-extracted. Single reviewer, localhost, no dependencies beyond Python 3.10.
+What the page does: tool calls nested under the narration that made them with the reply kept
+prominent, a tracker of dots that stay dim until an item has been looked at and take the verdict's
+colour once decided, rings on the items that need attention first with ↑ ↓ to step through them,
+inline notes anchored to the exact passage, a configurable decision panel, a summary table for the
+numbers to keep in view, and a JSONL export that never fills in what the reviewer left blank.
+
+Built during the "Evaluating and Improving AI Agents" course for the Cartwheel support agent across
+homeworks 3 to 7 (scenario pilot, open coding, judge adjudication, monitor flags), then extracted. Single reviewer, localhost, no dependencies beyond Python 3.10.
 
 ## Install
 
@@ -40,4 +46,5 @@ skills/trace-review/
   assets/export.py         annotations -> JSONL decisions
   examples/cartwheel/      adapter + config for a Langfuse-traced agent with scenario answer keys
   examples/chat-jsonl/     adapter + config for a plain chat log with no answer key
+  examples/configs/        judge-review and monitor-flag configs (verdict with empty sets, summary table, rings)
 ```

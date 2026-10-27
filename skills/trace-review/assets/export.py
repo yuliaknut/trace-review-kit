@@ -1,11 +1,11 @@
-"""Turn the annotation store into one JSONL row per reviewed item, applying the config's defaults.
+"""Turn the annotation store into one JSONL row per reviewed item.
 
     python export.py --samples review/samples.json --annotations review/annotations.json \
                      --config review/review.json --out review/decisions.jsonl [--all]
 
-Each row: {"id", <one key per config field>, "inline_notes": [{"quote", "note"}], "ts"}.
-Flag fields default per the config when the reviewer never touched them. Only reviewed items are
-exported unless --all is given. Reshape the rows afterwards if a deliverable wants other names.
+Each row: {"id", <one key per config field>, "inline_notes": [{"quote", "note"}], "seen", "ts"}.
+Nothing is inferred: a field the reviewer never set exports as null, and an item without a decision
+or a note is skipped unless --all is given. Reshape the rows afterwards if a deliverable wants other names.
 """
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from collections import Counter
 from pathlib import Path
 
 
-def load(path: Path, default):
+def load(path: Path | None, default):
     return json.loads(path.read_text(encoding="utf-8")) if path and path.exists() else default
 
 
@@ -35,8 +35,8 @@ def main() -> None:
     items = {a["item_id"]: a for a in ann if a.get("kind") == "item"}
     inline: dict[str, list] = {}
     for a in ann:
-        if a.get("kind") == "inline":
-            inline.setdefault(a["item_id"], []).append({"quote": a.get("quote", ""), "note": (a.get("note") or "").strip()})
+        if a.get("kind") == "inline" and (a.get("note") or "").strip():
+            inline.setdefault(a["item_id"], []).append({"quote": a.get("quote", ""), "note": a["note"].strip()})
 
     rows, skipped = [], 0
     for s in samples:
@@ -49,22 +49,19 @@ def main() -> None:
         row = {"id": s["id"]}
         for f in fields:
             v = vals.get(f["key"])
-            if f.get("type") == "flag" and v is None:
-                v = f.get("default", True)
-            if isinstance(v, str):
-                v = v.strip() or None
-            row[f["key"]] = v
-        for k, v in vals.items():  # fields not in the config still come through
+            row[f["key"]] = (v.strip() or None) if isinstance(v, str) else v
+        for k, v in vals.items():  # fields a verdict's `sets` wrote but the config does not list still come through
             row.setdefault(k, v)
         row["inline_notes"] = inline.get(s["id"], [])
+        row["seen"] = bool(rec.get("seen"))
         row["ts"] = rec.get("ts")
         rows.append(row)
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows), encoding="utf-8")
-    print(f"wrote {len(rows)} rows to {args.out} ({skipped} unreviewed skipped)")
+    print(f"wrote {len(rows)} rows to {args.out} ({skipped} undecided skipped)")
     for f in fields:
-        if f.get("type") in ("flag", "yesno", "passfail", "select", "verdict"):
+        if f.get("type") in ("verdict", "yesno", "select"):
             print(f"  {f['key']}: {dict(Counter(str(r.get(f['key'])) for r in rows))}")
 
 

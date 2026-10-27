@@ -25,7 +25,14 @@ def convert(sample: dict) -> dict:
         if role == "tool_call":
             messages.append({"role": "tool_call", "name": m.get("name"), "arguments": m.get("arguments")})
         elif role == "tool_result":
-            messages.append({"role": "tool_result", "name": m.get("name"), "content": m.get("content")})
+            res = {"role": "tool_result", "name": m.get("name"), "content": m.get("content")}
+            body = m.get("content") if isinstance(m.get("content"), dict) else None
+            # Retrieval results read better as one block per document than as JSON (see SKILL.md, tool_result.items).
+            if body and isinstance(body.get("results"), list) and m.get("name") == "search_help_center":
+                res["items"] = [{"title": r.get("policy_id"), "meta": f"score {r.get('score')}", "body": r.get("snippet")} for r in body["results"]]
+            if body and m.get("name") == "get_policy" and body.get("body"):
+                res["title"] = f"{body.get('title')} · {body.get('policy_id')}"; res["body_md"] = body["body"]
+            messages.append(res)
         elif role in ("user", "assistant"):
             messages.append({"role": role, "text": m.get("text") or m.get("content") or ""})
         else:
@@ -48,8 +55,12 @@ def convert(sample: dict) -> dict:
         "turns": f"{tup.get('turn_count')} · tools: {tup.get('tools_needed')}",
     }
     objective = exp.get("evaluation") == "objective"
+    # A ring marks items that need a decision first; here, anything the pilot review flagged as a failure.
+    ring = sample.get("pilot_failure") is True
     return {
         "id": sid,
+        "dot_class": "ring" if ring else None,
+        "dot_title": "confirmed failure in the pilot" if ring else None,
         "group": sample.get("scenario_group"),
         "chips": chips,
         "meta": [f"{meta.get('role') or tup.get('role', '?')} · user {tup.get('user_id', '?')}", f"prompt {meta.get('prompt_version', '?')}", ", ".join(sample.get("models") or []) or "model ?"],

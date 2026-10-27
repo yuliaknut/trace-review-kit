@@ -1,0 +1,20 @@
+{
+  "title": "Judge review · who is wrong on each disagreement",
+  "store_key": "judge-v2",
+  "instructions": "The judge and your label disagree on every ringed item. Decide what the disagreement means before touching the prompt.",
+  "fields": [
+    {"key": "resolution", "type": "verdict", "label": "Who is wrong?", "options": [
+      {"value": "judge_wrong", "label": "judge wrong → fix the prompt", "color": "red", "sets": {}},
+      {"value": "label_wrong", "label": "my label wrong", "color": "orange", "sets": {}},
+      {"value": "definition_unclear", "label": "definition unclear", "color": "yellow", "sets": {}}]},
+    {"key": "reason", "type": "textarea", "label": "Why: what the judge missed, or the rule to clarify", "rows": 6}
+  ],
+  "summary": {
+    "title": "Metrics by judge version (dev split)",
+    "columns": ["version", "n", "TP", "FN", "TN", "FP", "TPR [95% CI]", "TNR [95% CI]", "disagree"],
+    "rows": [["v0", "28", "9", "0", "9", "10", "1.00 [0.70, 1.00]", "0.47 [0.27, 0.68]", "10"],
+             ["v1", "28", "7", "2", "18", "1", "0.78 [0.45, 0.94]", "0.95 [0.75, 0.99]", "3"]],
+    "current_row": 1,
+    "note": "FP = judge Pass on your Fail; FN = judge Fail on your Pass. Items the code gate passed are not counted."
+  }
+}

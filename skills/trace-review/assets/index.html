@@ -7,10 +7,18 @@
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='7' fill='%23539bf5'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="/theme.css">
 <!--
-  trace-review-kit: one-item-at-a-time review page. Generic: everything project-specific comes
-  from the normalized samples file (see SKILL.md, "The sample contract") and review.json.
+  trace-review-kit: one-item-at-a-time review page. Generic: everything project-specific comes from the
+  normalized samples file and review.json (see SKILL.md: "The sample contract", "The review config").
   Reads  GET /api/samples  GET /api/config  GET /api/annotations
-  Writes POST /api/annotations (autosaved on every change; one "item" record per reviewed item, plus "inline" records)
+  Writes POST /api/annotations (autosaved on every change)
+  Records
+    item    one per visited item: {id:'item-'+item_id, kind:'item', item_id, fields:{<config key>: value}, seen, seen_ts, ts}
+            Only records with content (a set field or the seen mark) are persisted.
+    inline  one per note: {id, kind:'inline', item_id, block, start, end, quote, note, ts}
+            block = index of the message the selection sits in; start/end = character offsets inside that block,
+            so a repeated phrase anchors to the right occurrence and a selection crossing bold text or a table
+            cell still highlights. block is null for a cross-block selection or a note with no quote.
+  Nothing is inferred from silence: an item with no decision stays undecided, and a dot stays dim until seen.
 -->
 </head>
 <body>
@@ -24,20 +32,26 @@
   <div class="dots" id="dots"></div>
   <div class="status" id="status">loading…</div>
 </div>
+<details class="summary" id="summary" open hidden></details>
 <div class="item-head" id="item-head"></div>
 <div class="main" id="main"></div>
 <button class="fab" id="fab" title="annotate the selected text">＋ annotate</button>
+<div class="toast" id="toast"></div>
 
 <script>
-const state = { samples: [], annotations: [], config: { fields: [] }, idx: 0, saveTimer: null, dirty: false, pendingSel: null };
+const state = { samples: [], annotations: [], config: { fields: [] }, idx: 0, saveTimer: null, dirty: false, pendingSel: null,
+                openTools: new Set(), openFor: null, snap: '', seenTimer: null };
 const api = {
   async get(p) { const r = await fetch(p); return r.json(); },
   async post(p, body) { const r = await fetch(p, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); return r.json(); },
 };
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const pretty = (v) => { if (typeof v === 'string') { try { v = JSON.parse(v); } catch { return v; } } return JSON.stringify(v, null, 2); };
-function asList(a) { if (Array.isArray(a)) return a; if (a && Array.isArray(a.annotations)) return a.annotations; return []; }
-/* Minimal, escape-first markdown for assistant text: **bold**, `code`, "- " bullets, pipe tables. */
+const asObj = (v) => { if (typeof v === 'string') { try { return JSON.parse(v); } catch { return null; } } return v && typeof v === 'object' ? v : null; };
+const asList = (a) => Array.isArray(a) ? a : (a && Array.isArray(a.annotations)) ? a.annotations : [];
+const now = () => new Date().toISOString();
+const storeKey = () => 'trace_review:' + location.port + ':' + (state.config.store_key || '');
+/* Minimal, escape-first markdown: **bold**, `code`, "- " bullets, pipe tables, # headings. */
 function mdLite(text) {
   const lines = esc(text).split('\n'); const out = []; let inList = false; let table = null;
   const flushTable = () => { if (!table) return; out.push('<table>' + table.map((r, i) => `<tr>${r.map(c => i === 0 ? `<th>${c}</th>` : `<td>${c}</td>`).join('')}</tr>`).join('') + '</table>'); table = null; };
@@ -48,7 +62,8 @@ function mdLite(text) {
       (table = table || []).push(cells); continue;
     }
     flushTable();
-    const line = raw.replace(/\*\*(.+?)\*\*/g, '<b>$1</b>').replace(/`([^`]+)`/g, '<code>$1</code>');
+    let line = raw.replace(/\*\*(.+?)\*\*/g, '<b>$1</b>').replace(/`([^`]+)`/g, '<code>$1</code>');
+    const h = line.match(/^\s*#{1,3}\s+(.*)$/); if (h) line = `<b>${h[1]}</b>`;
     const li = line.match(/^\s*[-*]\s+(.*)$/);
     if (li) { if (!inList) { out.push('<ul>'); inList = true; } out.push(`<li>${li[1]}</li>`); continue; }
     if (inList) { out.push('</ul>'); inList = false; }
@@ -58,6 +73,8 @@ function mdLite(text) {
   flushTable();
   return out.join('\n').replace(/\n(<\/?ul>|<li>|<table>)/g, '$1').replace(/(<\/li>|<ul>|<\/ul>|<\/table>)\n/g, '$1');
 }
+let toastTimer = null;
+function showToast(msg) { const t = document.getElementById('toast'); t.textContent = msg; t.style.display = 'block'; clearTimeout(toastTimer); toastTimer = setTimeout(() => t.style.display = 'none', 4000); }
 
 /* ---------- data ---------- */
 async function load() {
@@ -65,145 +82,283 @@ async function load() {
   state.samples = Array.isArray(samples) ? samples : [];
   state.annotations = asList(annotations);
   state.config = config && Array.isArray(config.fields) ? config : { fields: [] };
+  state.snap = JSON.stringify(samples);
   if (state.config.title) { document.getElementById('title').textContent = state.config.title; document.title = state.config.title; }
-  try { const backup = JSON.parse(localStorage.getItem('trace_review_annotations:' + location.port) || 'null');
-        if (Array.isArray(backup) && backup.length > state.annotations.length) state.annotations = backup; } catch {}
+  renderSummary(state.config.summary);
+  // Restore the browser backup only when the last edit never reached the server (the dirty flag survives a reload).
+  // A backup must never overwrite a deliberately reset or switched annotations file.
+  try { const backup = JSON.parse(localStorage.getItem(storeKey()) || 'null');
+        if (localStorage.getItem(storeKey() + ':dirty') === '1' && Array.isArray(backup) && backup.length > state.annotations.length) { state.annotations = backup; showToast('restored unsaved notes from this browser'); scheduleSave(); }
+        else localStorage.removeItem(storeKey() + ':dirty'); } catch {}
   const hash = parseInt(location.hash.replace('#', ''), 10);
-  state.idx = Number.isFinite(hash) && hash >= 1 && hash <= state.samples.length ? hash - 1 : firstUnreviewed();
-  render();
+  state.idx = Number.isFinite(hash) && hash >= 1 && hash <= state.samples.length ? hash - 1 : firstUndecided();
+  render(); armSeen();
+  const every = Number(state.config.poll_seconds ?? 5); if (every > 0) setInterval(poll, every * 1000);
 }
-function firstUnreviewed() { const i = state.samples.findIndex(s => !isReviewed(s)); return i < 0 ? 0 : i; }
+async function poll() {
+  try {
+    const samples = await api.get('/api/samples'); const snap = JSON.stringify(samples);
+    if (snap === state.snap) return;
+    const before = state.samples.length; state.samples = Array.isArray(samples) ? samples : []; state.snap = snap;
+    showToast(`samples updated (${state.samples.length - before >= 0 ? '+' : ''}${state.samples.length - before})`);
+    if (!typingNow()) render(); else { renderDots(); setStatus(); }
+  } catch {}
+}
+const typingNow = () => { const ae = document.activeElement; return ae.tagName === 'TEXTAREA' || (ae.tagName === 'INPUT' && ae.type === 'text'); };
+function firstUndecided() { const i = state.samples.findIndex(s => !isReviewed(s)); return i < 0 ? 0 : i; }
 function recFor(s) {
   let a = state.annotations.find(x => x.kind === 'item' && x.item_id === s.id);
   if (!a) { a = { id: 'item-' + s.id, kind: 'item', item_id: s.id, fields: {}, ts: null }; state.annotations.push(a); }
-  a.fields = a.fields || {};
-  return a;
+  a.fields = a.fields || {}; return a;
 }
+const itemRec = (s) => state.annotations.find(x => x.kind === 'item' && x.item_id === s.id);
 const inlineFor = (s) => state.annotations.filter(x => x.kind === 'inline' && x.item_id === s.id);
+const noted = (s) => inlineFor(s).some(n => n.note && n.note.trim());
 const fieldSet = (v) => !(v === null || v === undefined || v === '' || (Array.isArray(v) && !v.length));
-function isReviewed(s) { const a = state.annotations.find(x => x.kind === 'item' && x.item_id === s.id); return !!((a && Object.values(a.fields || {}).some(fieldSet)) || inlineFor(s).length); }
+const isReviewed = (s) => { const a = itemRec(s); return !!((a && Object.values(a.fields || {}).some(fieldSet)) || noted(s)); };
+const hasContent = (a) => a.kind !== 'item' || !!(a.seen || Object.values(a.fields || {}).some(fieldSet));
 const verdictField = () => state.config.fields.find(f => f.type === 'verdict');
-function verdictOpt(s) { const f = verdictField(); if (!f) return null; const a = state.annotations.find(x => x.kind === 'item' && x.item_id === s.id); const v = a && a.fields ? a.fields[f.key] : null; return (f.options || []).find(o => o.value === v) || null; }
-function isFlagged(s) { const a = state.annotations.find(x => x.kind === 'item' && x.item_id === s.id); if (!a) return false;
-  return state.config.fields.some(f => f.type === 'flag' && a.fields[f.key] !== undefined && a.fields[f.key] !== null && a.fields[f.key] !== (f.default !== false)); }
-function scheduleSave() { state.dirty = true; setStatus(); clearTimeout(state.saveTimer); state.saveTimer = setTimeout(save, 500); }
+function verdictOpt(s) { const f = verdictField(); if (!f) return null; const a = itemRec(s); const v = a && a.fields ? a.fields[f.key] : null; return (f.options || []).find(o => o.value === v) || null; }
+function scheduleSave() { state.dirty = true; try { localStorage.setItem(storeKey() + ':dirty', '1'); } catch {} setStatus(); clearTimeout(state.saveTimer); state.saveTimer = setTimeout(save, 500); }
 async function save() {
-  try { localStorage.setItem('trace_review_annotations:' + location.port, JSON.stringify(state.annotations)); } catch {}
-  try { const r = await api.post('/api/annotations', state.annotations); state.dirty = !r || !r.ok; setStatus(r && r.error ? r.error : null); }
+  const records = state.annotations.filter(hasContent);
+  try { localStorage.setItem(storeKey(), JSON.stringify(records)); } catch {}
+  try { const r = await api.post('/api/annotations', records); state.dirty = !r || !r.ok; if (!state.dirty) localStorage.removeItem(storeKey() + ':dirty'); setStatus(r && r.error ? r.error : null); }
   catch (e) { state.dirty = true; setStatus('save failed: ' + e.message); }
   renderDots();
 }
 function setStatus(err) {
-  const el = document.getElementById('status');
+  const el = document.getElementById('status'); const n = state.samples.length;
   let summary;
-  if (verdictField()) { const decided = state.samples.filter(verdictOpt).length; const notesOnly = state.samples.filter(s => !verdictOpt(s) && isReviewed(s)).length; summary = `${decided} of ${state.samples.length} decided${notesOnly ? ` · ${notesOnly} note only` : ''}`; }
-  else summary = `${state.samples.filter(isReviewed).length} of ${state.samples.length} reviewed`;
-  el.innerHTML = err ? `<span class="saved dirty">${esc(err)}</span>` : `${summary} · <span class="saved ${state.dirty ? 'dirty' : 'ok'}">${state.dirty ? 'saving…' : 'saved ✓'}</span>`;
+  if (verdictField()) { const decided = state.samples.filter(verdictOpt).length; const notesOnly = state.samples.filter(s => !verdictOpt(s) && isReviewed(s)).length; summary = `${decided} of ${n} decided${notesOnly ? ` · ${notesOnly} note only` : ''}`; }
+  else summary = `${state.samples.filter(isReviewed).length} of ${n} reviewed`;
+  const seen = state.samples.filter(wasSeen).length;
+  el.innerHTML = err ? `<span class="saved dirty">${esc(err)}</span>` : `${summary} · seen ${seen}/${n} · <span class="saved ${state.dirty ? 'dirty' : 'ok'}">${state.dirty ? 'saving…' : 'saved ✓'}</span>`;
+}
+
+/* ---------- seen tracking: an item counts as seen after five seconds on screen, recorded on its item record ---------- */
+const wasSeen = (s) => !!(itemRec(s) || {}).seen;
+function armSeen() {
+  clearTimeout(state.seenTimer);
+  const s = state.samples[state.idx]; if (!s || wasSeen(s)) return;
+  const at = state.idx;
+  state.seenTimer = setTimeout(() => { if (state.idx !== at) return; const a = recFor(state.samples[at]); a.seen = true; a.seen_ts = now(); scheduleSave(); renderDots(); setStatus(); }, Number(state.config.seen_after_ms ?? 5000));
 }
 
 /* ---------- navigation ---------- */
-function go(i) { if (!state.samples.length) return; state.idx = Math.max(0, Math.min(state.samples.length - 1, i)); location.hash = String(state.idx + 1); render(); window.scrollTo({ top: 0 }); }
+function go(i, opts) {
+  if (!state.samples.length) return;
+  state.idx = Math.max(0, Math.min(state.samples.length - 1, i)); location.hash = String(state.idx + 1);
+  render(); window.scrollTo({ top: 0 }); armSeen();
+  if (opts && opts.focus) setTimeout(() => focusMark(opts.focus), 50);
+}
 document.getElementById('prev').onclick = () => go(state.idx - 1);
 document.getElementById('next').onclick = () => go(state.idx + 1);
+const ringed = () => state.samples.map((s, i) => isRinged(s) ? i : -1).filter(i => i >= 0);
+const isRinged = (s) => s.dot_class === 'ring' || s.ring === true;
 document.addEventListener('keydown', (e) => {
-  const ae = document.activeElement; const typing = ae.tagName === 'TEXTAREA' || (ae.tagName === 'INPUT' && ae.type === 'text');
+  const typing = typingNow();
   if (e.key === 'Escape' && typing) { document.activeElement.blur(); return; }
-  if (typing && !e.altKey) return;                       // plain arrows edit text; Option/Alt + arrows navigate from anywhere
+  if (typing && !e.altKey) return;                       // plain arrows edit the text; Option/Alt + arrows navigate anywhere
   if (e.key === 'ArrowRight') { e.preventDefault(); go(state.idx + 1); }
   if (e.key === 'ArrowLeft') { e.preventDefault(); go(state.idx - 1); }
+  if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {    // up = next ringed item, down = previous: the round in front of you
+    const marked = ringed(); if (!marked.length) return; e.preventDefault();
+    const next = e.key === 'ArrowUp' ? (marked.find(i => i > state.idx) ?? marked[0]) : ([...marked].reverse().find(i => i < state.idx) ?? marked[marked.length - 1]);
+    go(next); showToast(`ringed ${marked.indexOf(next) + 1} of ${marked.length}`);
+  }
 });
 function renderDots() {
-  const box = document.getElementById('dots'); box.innerHTML = '';
+  const box = document.getElementById('dots'); box.innerHTML = ''; let lastBatch = null;
   state.samples.forEach((s, i) => {
-    const d = document.createElement('span');
-    const vo = verdictOpt(s);
-    d.className = 'dot' + (vo ? ' c-' + (vo.color || 'blue') : isFlagged(s) ? ' flagged' : isReviewed(s) ? ' done' : '') + (i === state.idx ? ' current' : '');
-    d.title = s.id; d.onclick = () => go(i); box.appendChild(d);
+    if (i && (s.batch || null) !== lastBatch) { const g = document.createElement('span'); g.className = 'gap'; box.appendChild(g); }
+    lastBatch = s.batch || null;
+    const d = document.createElement('span'); const vo = verdictOpt(s);
+    d.className = 'dot' + (vo ? ' c-' + (vo.color || 'blue') : isReviewed(s) ? ' done' : '') + (isRinged(s) ? ' ring' : '') + (wasSeen(s) ? ' seen' : '') + (i === state.idx ? ' current' : '');
+    d.title = `${s.id}${s.batch ? ' · ' + s.batch : ''}\n${wasSeen(s) ? 'seen' : 'not seen yet'}${vo ? '\n' + (vo.label || vo.value) : ''}${s.dot_title ? '\n' + s.dot_title : ''}`;
+    d.onclick = () => go(i); box.appendChild(d);
   });
 }
 
-/* ---------- rendering ---------- */
-function summaryOf(content) {
-  let v = content; if (typeof v === 'string') { try { v = JSON.parse(v); } catch { return esc(String(v).slice(0, 90)); } }
-  if (v && typeof v === 'object' && !Array.isArray(v)) {
-    if (v.ok === false || v.error) return `<span class="err">${esc(v.error || 'error')}</span> ${esc(String(v.reason || v.message || '').slice(0, 80))}`;
-    if (v.ok === true) { const keys = Object.keys(v).filter(k => k !== 'ok'); return `<span class="ok">ok</span> · ${esc(keys.join(', '))}`; }
-    return esc(Object.keys(v).slice(0, 6).join(', '));
-  }
-  return esc(JSON.stringify(v).slice(0, 90));
+/* ---------- conversation ---------- */
+/* Every annotatable region carries its message index, so a note anchors to a block rather than to the whole
+   conversation. Tool names get anchor blocks offset out of the message range so a note on the call itself
+   never collides with one on the same call's arguments. */
+const NAME_BLOCK = 10000;
+const blockAttrs = (i) => `data-block="${i}"`;
+function summaryOf(res) {
+  if (res && res.summary) return esc(res.summary);
+  const v = asObj(res && res.content);
+  if (!v) return res ? esc(String(res.content ?? '').slice(0, 90)) : '(no result recorded)';
+  if (Array.isArray(v)) return `${v.length} item${v.length === 1 ? '' : 's'}`;
+  if (v.ok === false || v.error) return `<span class="err">${esc(v.error || 'error')}</span> ${esc(String(v.reason || v.message || '').slice(0, 80))}`;
+  const keys = Object.keys(v).filter(k => k !== 'ok'); return `${v.ok === true ? '<span class="ok">ok</span> · ' : ''}${esc(keys.slice(0, 6).join(', '))}`;
 }
-function renderMessages(msgs) {
+const isErr = (res) => { const v = asObj(res && res.content); return !!(v && !Array.isArray(v) && (v.ok === false || v.error)) || !!(res && res.error); };
+/* A tool result may carry `items` ([{title, meta, body}], e.g. retrieved documents) to render as separate
+   readable blocks, or `body_md` for one markdown body, instead of raw JSON. */
+function toolBody(res, ri) {
+  const at = blockAttrs(ri);
+  if (Array.isArray(res.items)) return `<div class="rbody" ${at}>${res.items.map(r => `<div class="rres"><span class="pid">${esc(r.title ?? '')}</span>${r.meta ? `<span class="score">${esc(r.meta)}</span>` : ''}${r.body ? `<div class="snip">${esc(r.body)}</div>` : ''}</div>`).join('')}</div>`;
+  if (typeof res.body_md === 'string') return `<div class="rbody" ${at}>${res.title ? `<h4>${esc(res.title)}</h4>` : ''}${mdLite(res.body_md)}</div>`;
+  return `<pre class="result" ${at}>${esc(pretty(res.content))}</pre>`;
+}
+function toolCard(call, res, ci, ri) {
+  const open = state.openTools.has(ci) ? ' open' : '';
+  return `<div class="tool${isErr(res) ? ' err' : ''}${open}" data-tool="${ci}" title="click to show or hide the result"><div class="thead"><span class="tag">TOOL</span><span class="tname" ${blockAttrs(NAME_BLOCK + ci)}>${esc(call.name)}</span><span class="sum">result · ${summaryOf(res)}</span></div><pre class="args" ${blockAttrs(ci)}>${esc(pretty(call.arguments))}</pre>${res ? toolBody(res, ri) : ''}</div>`;
+}
+function resultCard(m, i) {
+  return `<div class="tool${isErr(m) ? ' err' : ''} open" data-tool="${i}"><div class="thead"><span class="tag">RESULT</span><span class="tname" ${blockAttrs(NAME_BLOCK + i)}>${esc(m.name)}</span></div>${toolBody(m, i)}</div>`;
+}
+function msgCard(m, i, extra) {
+  const role = ['user', 'assistant', 'error'].includes(m.role) ? m.role : 'observation';
+  const label = m.label || (role === 'observation' ? (m.role || 'observation') : role);
+  const text = m.text ?? m.content ?? '';
+  const body = role === 'assistant' ? mdLite(typeof text === 'string' ? text : pretty(text)) : esc(typeof text === 'string' ? text : pretty(text));
+  return `<div class="msg ${role}${extra ? ' ' + extra : ''}"><span class="role">${esc(label)}</span><div class="txt" ${blockAttrs(i)}>${body}</div></div>`;
+}
+/* One turn = the user message(s), then steps (narration plus the tool calls it made) nested on a rail,
+   then the reply. Items are {m, i} pairs so every rendered block keeps its index in s.messages. */
+function renderTurn(items) {
   const out = []; let i = 0;
-  while (i < msgs.length) {
+  while (i < items.length && items[i].m.role === 'user') { out.push(msgCard(items[i].m, items[i].i)); i++; }
+  let replyAt = -1; for (let j = items.length - 1; j >= i; j--) if (items[j].m.role === 'assistant') { replyAt = j; break; }
+  const middle = items.slice(i, replyAt < 0 ? items.length : replyAt);
+  let step = []; const flush = () => { if (step.length) { out.push(`<div class="step">${step.join('')}</div>`); step = []; } };
+  for (let k = 0; k < middle.length; k++) {
+    const { m, i: gi } = middle[k];
+    if (m.role === 'assistant') { flush(); step.push(msgCard(m, gi)); continue; }
+    if (m.role === 'tool_call') { const nx = middle[k + 1]; const res = nx && nx.m.role === 'tool_result' ? nx : null; step.push(toolCard(m, res ? res.m : null, gi, res ? res.i : null)); if (res) k++; continue; }
+    if (m.role === 'tool_result') { step.push(resultCard(m, gi)); continue; }
+    flush(); out.push(msgCard(m, gi));
+  }
+  flush();
+  if (replyAt >= 0) { out.push(msgCard(items[replyAt].m, items[replyAt].i, 'reply')); for (let j = replyAt + 1; j < items.length; j++) out.push(msgCard(items[j].m, items[j].i)); }
+  return out.join('');
+}
+function renderFlat(msgs) {
+  const out = [];
+  for (let i = 0; i < msgs.length; i++) {
     const m = msgs[i];
-    if (m.role === 'tool_call') {
-      const res = msgs[i + 1] && msgs[i + 1].role === 'tool_result' ? msgs[i + 1] : null;
-      out.push(`<div class="tool" title="click to show or hide the result"><div class="thead"><span class="tag">TOOL</span><span>${esc(m.name)}</span><span class="sum">result · ${res ? summaryOf(res.content) : '(none recorded)'}</span></div><pre class="args">${esc(pretty(m.arguments))}</pre>` +
-        (res ? `<pre class="result">${esc(pretty(res.content))}</pre>` : '') + `</div>`);
-      i += res ? 2 : 1; continue;
-    }
-    if (m.role === 'tool_result') { out.push(`<div class="tool open"><div class="thead"><span class="tag">RESULT</span><span>${esc(m.name)}</span></div><pre class="result">${esc(pretty(m.content))}</pre></div>`); i++; continue; }
-    const role = ['user', 'assistant', 'error'].includes(m.role) ? m.role : 'observation';
-    const label = m.label || (role === 'observation' ? (m.role || 'observation') : role);
-    const text = m.text ?? m.content ?? '';
-    const body = role === 'assistant' ? mdLite(typeof text === 'string' ? text : pretty(text)) : esc(typeof text === 'string' ? text : pretty(text));
-    out.push(`<div class="msg ${role}"><span class="role">${esc(label)}</span>${body}</div>`); i++;
+    if (m.role === 'tool_call') { const nx = msgs[i + 1]; const res = nx && nx.role === 'tool_result' ? nx : null; out.push(toolCard(m, res, i, res ? i + 1 : null)); if (res) i++; continue; }
+    if (m.role === 'tool_result') { out.push(resultCard(m, i)); continue; }
+    out.push(msgCard(m, i));
   }
   return out.join('');
 }
-function renderContext(s) {
-  const c = s.context; if (!c) return '';
-  const fields = c.fields && typeof c.fields === 'object' ? Object.entries(c.fields) : [];
-  return `<div class="card"><h2>${esc(c.title || 'Context')}</h2><div class="body">
-    ${c.headline ? `<div class="headline">${esc(c.headline)}</div>` : ''}
-    ${c.body ? `<div class="ctx-body">${esc(c.body)}</div>` : ''}
-    ${fields.length ? `<div class="kv">${fields.map(([k, v]) => `<span class="k">${esc(k)}</span><span class="v">${esc(typeof v === 'string' ? v : JSON.stringify(v))}</span>`).join('')}</div>` : ''}
-  </div></div>`;
+function renderConversation(s) {
+  const msgs = s.messages || [];
+  if (state.config.conversation_layout === 'flat') return renderFlat(msgs);
+  // Turns: a message's own `turn` wins; otherwise a turn starts at a user message that follows anything but another user message.
+  const byTurn = new Map(); let t = 0, prev = null;
+  msgs.forEach((m, i) => { if (Number.isFinite(m.turn)) t = m.turn; else if (m.role === 'user' && prev !== 'user') t++; else if (!t) t = 1; prev = m.role; if (!byTurn.has(t)) byTurn.set(t, []); byTurn.get(t).push({ m, i }); });
+  const info = (s.turns || []).reduce((acc, x) => (acc[x.turn] = x, acc), {});
+  const out = [];
+  for (const [k, list] of [...byTurn.entries()].sort((a, b) => a[0] - b[0])) {
+    if (byTurn.size > 1) { const x = info[k]; out.push(`<div class="turn">turn ${k} of ${byTurn.size}${x && x.label ? ` · <code>${esc(x.label)}</code>` : ''}${x && x.link ? ` · <a href="${esc(x.link)}" target="_blank" rel="noopener">${esc(x.link_label || 'open ↗')}</a>` : ''}</div>`); }
+    out.push(renderTurn(list));
+  }
+  return out.join('');
 }
-function visible(f, rec) { if (!f.show_when) return true; const v = rec.fields[f.show_when.key]; const def = state.config.fields.find(x => x.key === f.show_when.key); const eff = v === null || v === undefined ? (def && def.type === 'flag' ? def.default !== false : null) : v; return eff === f.show_when.equals; }
+
+/* ---------- side column ---------- */
+/* context: one card or a list; collapsible: true makes a card foldable, collapsed: true starts it folded; the fold state is remembered per card title */
+const ctxKey = (c) => storeKey() + ':ctx:' + (c.title || 'Context');
+function renderContext(s) {
+  const cs = Array.isArray(s.context) ? s.context : [s.context];
+  return cs.filter(Boolean).map((c, k) => {
+    const fields = c.fields && typeof c.fields === 'object' ? Object.entries(c.fields) : [];
+    const inner = `<div class="body">${c.headline ? `<div class="headline">${esc(c.headline)}</div>` : ''}${c.body ? `<div class="ctx-body">${esc(c.body)}</div>` : ''}${fields.length ? `<div class="kv">${fields.map(([a, v]) => `<span class="k">${esc(a)}</span><span class="v">${esc(typeof v === 'string' ? v : JSON.stringify(v))}</span>`).join('')}</div>` : ''}</div>`;
+    if (!(c.collapsible || c.collapsed)) return `<div class="card"><h2>${esc(c.title || 'Context')}</h2>${inner}</div>`;
+    const stored = localStorage.getItem(ctxKey(c)); const open = stored === null ? !c.collapsed : stored === '1';
+    return `<div class="card ctx${open ? '' : ' collapsed'}" data-ctx="${k}"><h2 class="clickable" title="show or hide">${esc(c.title || 'Context')}${!open && c.headline ? ` <span class="sub">· ${esc(c.headline)}</span>` : ''}<span class="tgl">${open ? '▾' : '▸'}</span></h2>${inner}</div>`;
+  }).join('');
+}
+function renderSummary(sm) {
+  const el = document.getElementById('summary'); if (!el || !sm || !Array.isArray(sm.rows)) return;
+  el.hidden = false;
+  el.innerHTML = `<summary>${esc(sm.title || 'Summary')}</summary><table><thead><tr>${(sm.columns || []).map(c => `<th>${esc(c)}</th>`).join('')}</tr></thead><tbody>${sm.rows.map((r, i) => `<tr class="${i === sm.current_row ? 'cur' : ''}">${r.map(v => `<td>${esc(v)}</td>`).join('')}</tr>`).join('')}</tbody></table>${sm.note ? `<div class="snote">${esc(sm.note)}</div>` : ''}`;
+}
+function visible(f, rec) { if (!f.show_when) return true; return rec.fields[f.show_when.key] === f.show_when.equals; }
 function renderField(f, rec) {
   const v = rec.fields[f.key]; const id = 'f-' + f.key;
   const lbl = `<label class="lbl" for="${id}">${esc(f.label || f.key)}${f.hint ? ` <span class="hint" style="margin:0">(${esc(f.hint)})</span>` : ''}</label>`;
-  if (f.type === 'flag') { const def = f.default !== false; const on = v === null || v === undefined ? def : v;
-    return `<div class="field row" data-key="${esc(f.key)}"><button class="flag-toggle ${on ? 'on' : 'off'}" data-flag="${esc(f.key)}">${on ? '✓ ' : '✗ '}${esc(on ? (f.label_on || f.label) : (f.label_off || 'not ' + f.label))}</button>${f.hint ? `<span class="hint" style="margin:0">${esc(f.hint)}</span>` : ''}</div>`; }
+  if (f.type === 'verdict') return `<div class="field">${lbl}<span class="seg" data-verdict="${esc(f.key)}">${(f.options || []).map(o => `<button class="c-${esc(o.color || 'blue')} ${v === o.value ? 'on' : ''}" data-v="${esc(o.value)}" title="click again to clear">${esc(o.label || o.value)}</button>`).join('')}</span></div>`;
   if (f.type === 'yesno') return `<div class="field">${lbl}<span class="seg" data-seg="${esc(f.key)}"><button class="yes ${v === true ? 'on' : ''}" data-v="true">yes</button><button class="no ${v === false ? 'on' : ''}" data-v="false">no</button></span></div>`;
-  // passfail stores a boolean "is a failure": pass = false, fail = true. Click the active one again to clear.
-  if (f.type === 'passfail') return `<div class="field">${lbl}<span class="seg" data-seg="${esc(f.key)}"><button class="yes ${v === false ? 'on' : ''}" data-v="false">pass</button><button class="no ${v === true ? 'on' : ''}" data-v="true">fail</button></span></div>`;
-  // verdict: one segmented control whose options each set several underlying fields; click the active one again to clear
-  if (f.type === 'verdict') return `<div class="field">${lbl}<span class="seg" data-verdict="${esc(f.key)}">${(f.options || []).map(o => `<button class="c-${esc(o.color || 'blue')} ${v === o.value ? 'on' : ''}" data-v="${esc(o.value)}">${esc(o.label || o.value)}</button>`).join('')}</span></div>`;
   if (f.type === 'select') return `<div class="field">${lbl}<span class="seg" data-select="${esc(f.key)}">${(f.options || []).map(o => `<button class="pick ${v === o ? 'on' : ''}" data-v="${esc(o)}">${esc(o)}</button>`).join('')}</span></div>`;
-  if (f.type === 'checklist') { const set = new Set(Array.isArray(v) ? v : []);
-    return `<div class="field">${lbl}<div class="checks" data-checks="${esc(f.key)}">${(f.options || []).map(o => `<label><input type="checkbox" value="${esc(o)}" ${set.has(o) ? 'checked' : ''}> ${esc(o)}</label>`).join('')}</div></div>`; }
+  if (f.type === 'checklist') { const set = new Set(Array.isArray(v) ? v : []); return `<div class="field">${lbl}<div class="checks" data-checks="${esc(f.key)}">${(f.options || []).map(o => `<label><input type="checkbox" value="${esc(o)}" ${set.has(o) ? 'checked' : ''}> ${esc(o)}</label>`).join('')}</div></div>`; }
   if (f.type === 'text') return `<div class="field">${lbl}<input type="text" id="${id}" data-text="${esc(f.key)}" value="${esc(v || '')}" placeholder="${esc(f.placeholder || '')}"></div>`;
   return `<div class="field">${lbl}<textarea id="${id}" data-text="${esc(f.key)}" rows="${f.rows || 5}" placeholder="${esc(f.placeholder || '')}">${esc(v || '')}</textarea></div>`;
 }
 function renderReview(s) {
   const rec = recFor(s);
   return `<div class="card"><h2>${esc(state.config.review_title || 'Your review')}</h2><div class="body">
+    ${state.config.instructions ? `<div class="criterion">${esc(state.config.instructions)}</div>` : ''}
     ${state.config.fields.map(f => visible(f, rec) ? renderField(f, rec) : '').join('')}
-    <div class="hint">Autosaves. <kbd>←</kbd> <kbd>→</kbd> move between items; while typing use <kbd>⌥</kbd>/<kbd>Alt</kbd> + arrows, or <kbd>Esc</kbd> to leave the box. Select text in the conversation to add an inline note.</div>
+    <div class="row"><button id="noquote" title="for a failure with nothing to quote, e.g. a call that never happened">＋ note without a quote</button></div>
+    <div class="hint">Autosaves. Select text in the conversation to add an inline note; in a note <kbd>Enter</kbd> saves and leaves the box, <kbd>⇧</kbd><kbd>Enter</kbd> starts a new line. <kbd>←</kbd> <kbd>→</kbd> move between items${ringed().length ? ', <kbd>↑</kbd> <kbd>↓</kbd> between ringed ones' : ''}; while typing use <kbd>⌥</kbd>/<kbd>Alt</kbd> + arrows, or <kbd>Esc</kbd> to leave the box.</div>
   </div></div>`;
 }
 function renderInline(s) {
   const notes = inlineFor(s); if (!notes.length) return '';
-  return `<h3>Inline notes · ${notes.length}</h3>` + notes.map(n => `<div class="note" data-aid="${esc(n.id)}">
-    <div class="quote" title="jump to the quoted text"><span class="q">“${esc(n.quote)}”</span><button class="del" title="delete this note">×</button></div>
-    <textarea rows="2" placeholder="what you notice about this passage">${esc(n.note || '')}</textarea></div>`).join('');
+  return `<h3>${esc(state.config.notes_title || 'Inline notes')} · ${notes.length}</h3>` + notes.map(n => `<div class="note" data-aid="${esc(n.id)}">
+    <div class="quote" title="${n.quote ? 'jump to the quoted text' : 'no quote'}"><span class="q">${n.quote ? `“${esc(n.quote)}”` : '<span style="font-style:normal">no quote · whole item</span>'}</span><button class="del" title="delete this note">×</button></div>
+    <textarea rows="2" placeholder="what you notice here, in your own words">${esc(n.note || '')}</textarea></div>`).join('');
+}
+
+/* ---------- highlights: block offsets first, quote match inside the block second, never outside it ---------- */
+function wrapQuote(root, quote, id, title) {
+  if (!quote) return false;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT); let t;
+  while ((t = walker.nextNode())) {
+    const k = t.nodeValue.indexOf(quote);
+    if (k < 0 || t.parentElement.closest('mark')) continue;
+    const r = document.createRange(); r.setStart(t, k); r.setEnd(t, k + quote.length);
+    const mark = document.createElement('mark'); mark.className = 'hl'; mark.dataset.aid = id; mark.title = title || '';
+    try { r.surroundContents(mark); return true; } catch { return false; }
+  }
+  return false;
+}
+/* Wrap [start, end) inside one block, one mark per text node crossed, so a span through bold text or a table cell highlights whole. */
+function wrapInBlock(block, start, end, id, title) {
+  if (!block || !Number.isFinite(start) || !Number.isFinite(end) || end <= start) return false;
+  const nodes = []; let off = 0; const w = document.createTreeWalker(block, NodeFilter.SHOW_TEXT); let t;
+  while ((t = w.nextNode())) { nodes.push([t, off]); off += t.nodeValue.length; }
+  let hit = false;
+  for (const [node, base] of nodes) {
+    const a = Math.max(start - base, 0), b = Math.min(end - base, node.nodeValue.length);
+    if (b <= a || (node.parentElement && node.parentElement.closest('mark'))) continue;
+    try { const r = document.createRange(); r.setStart(node, a); r.setEnd(node, b); const mark = document.createElement('mark'); mark.className = 'hl'; mark.dataset.aid = id; mark.title = title || ''; r.surroundContents(mark); hit = true; } catch {}
+  }
+  return hit;
 }
 function highlightQuotes(s) {
   const conv = document.querySelector('.conv'); if (!conv) return;
   for (const n of inlineFor(s)) {
-    if (!n.quote) continue;
-    const walker = document.createTreeWalker(conv, NodeFilter.SHOW_TEXT); let t;
-    while ((t = walker.nextNode())) {
-      const k = t.nodeValue.indexOf(n.quote);
-      if (k < 0 || t.parentElement.closest('mark.hl')) continue;
-      const r = document.createRange(); r.setStart(t, k); r.setEnd(t, k + n.quote.length);
-      const mark = document.createElement('mark'); mark.className = 'hl'; mark.dataset.aid = n.id; mark.title = n.note || 'inline note';
-      r.surroundContents(mark); break;
+    const title = n.note || 'inline note';
+    if (Number.isInteger(n.block)) {
+      const b = conv.querySelector(`[data-block="${n.block}"]`);
+      if (b) {
+        if (Number.isInteger(n.start) && wrapInBlock(b, n.start, n.end, n.id, title)) continue;
+        if (wrapQuote(b, n.quote, n.id, title)) continue;
+        const k = n.quote ? b.textContent.indexOf(n.quote) : -1; if (k >= 0) wrapInBlock(b, k, k + n.quote.length, n.id, title);
+        continue;
+      }
     }
+    wrapQuote(conv, n.quote, n.id, title);
   }
 }
+const marksFor = (id) => document.querySelectorAll(`mark[data-aid="${CSS.escape(id)}"]`);
+function focusMark(id) {
+  const mk = document.querySelector(`mark[data-aid="${CSS.escape(id)}"]`); if (!mk) return;
+  const tool = mk.closest('.tool');                       // a quote inside a tool result needs its card opened
+  if (tool && !tool.classList.contains('open')) { tool.classList.add('open'); const k = parseInt(tool.dataset.tool, 10); if (Number.isInteger(k)) state.openTools.add(k); }
+  document.querySelectorAll('mark.focus').forEach(x => x.classList.remove('focus'));
+  marksFor(id).forEach(x => x.classList.add('focus'));
+  mk.scrollIntoView({ block: 'center', behavior: 'smooth' });
+}
+
+/* ---------- render ---------- */
 const chipClass = (c) => typeof c === 'object' && c ? `chip c-${esc(c.color || '')}` : 'chip';
 const chipText = (c) => typeof c === 'object' && c ? c.text : c;
 function render() {
@@ -213,57 +368,67 @@ function render() {
   renderDots(); setStatus(); hideFab();
   if (!state.samples.length) { head.innerHTML = ''; main.innerHTML = `<div class="empty">No samples yet. Write your adapter's output to the samples file named on the command line, then reload.</div>`; return; }
   const s = state.samples[state.idx];
+  if (state.openFor !== s.id) { state.openTools = new Set(); state.openFor = s.id; }
   head.innerHTML = `<span class="sid">${esc(s.id)}</span>
     ${(s.chips || []).map(c => `<span class="${chipClass(c)}">${esc(chipText(c))}</span>`).join('')}
-    ${(s.meta || []).map(m => `<span class="meta">${esc(m)}</span>`).join('')}
+    ${(s.meta || []).filter(Boolean).map(m => `<span class="meta">${esc(m)}</span>`).join('')}
     ${s.link ? `<a href="${esc(s.link)}" target="_blank" rel="noopener">${esc(s.link_label || 'open source ↗')}</a>` : ''}
     <span class="tools-ctl"><button id="expand-all" title="show every tool result">expand all</button><button id="collapse-all" title="hide every tool result">collapse all</button></span>`;
-  main.innerHTML = `<div class="conv">${renderMessages(s.messages || [])}</div><div class="side">${renderContext(s)}${renderReview(s)}${renderInline(s)}</div>`;
+  main.innerHTML = `<div class="conv">${renderConversation(s)}</div><div class="side">${renderContext(s)}${renderReview(s)}${renderInline(s)}</div>`;
   highlightQuotes(s);
-  main.querySelectorAll('.tool').forEach(tc => tc.addEventListener('click', () => { const sel = window.getSelection(); if (sel && !sel.isCollapsed && tc.contains(sel.anchorNode)) return; tc.classList.toggle('open'); }));
-  document.getElementById('expand-all').onclick = () => main.querySelectorAll('.tool').forEach(tc => tc.classList.add('open'));
-  document.getElementById('collapse-all').onclick = () => main.querySelectorAll('.tool').forEach(tc => tc.classList.remove('open'));
-  const rec = recFor(s); const touch = () => { rec.ts = new Date().toISOString(); scheduleSave(); };
+  const noteOpen = (tc, on) => { const k = parseInt(tc.dataset.tool, 10); if (!Number.isInteger(k)) return; on ? state.openTools.add(k) : state.openTools.delete(k); };
+  main.querySelectorAll('.tool').forEach(tc => tc.addEventListener('click', () => { const sel = window.getSelection(); if (sel && !sel.isCollapsed && tc.contains(sel.anchorNode)) return; noteOpen(tc, tc.classList.toggle('open')); }));
+  document.getElementById('expand-all').onclick = () => main.querySelectorAll('.tool').forEach(tc => { tc.classList.add('open'); noteOpen(tc, true); });
+  document.getElementById('collapse-all').onclick = () => main.querySelectorAll('.tool').forEach(tc => { tc.classList.remove('open'); noteOpen(tc, false); });
+  main.querySelectorAll('.card.ctx h2').forEach(h => h.onclick = () => { const card = h.closest('.card'); const c = (Array.isArray(s.context) ? s.context : [s.context]).filter(Boolean)[parseInt(card.dataset.ctx, 10)]; const open = card.classList.toggle('collapsed') ? '0' : '1'; try { localStorage.setItem(ctxKey(c), open); } catch {} render(); });
+  const rec = recFor(s); const touch = () => { rec.ts = now(); scheduleSave(); };
   main.querySelectorAll('[data-text]').forEach(el => el.addEventListener('input', (e) => { rec.fields[el.dataset.text] = e.target.value; touch(); }));
-  main.querySelectorAll('[data-flag]').forEach(b => b.onclick = () => { const f = state.config.fields.find(x => x.key === b.dataset.flag); const def = f.default !== false; const cur = rec.fields[f.key] === null || rec.fields[f.key] === undefined ? def : rec.fields[f.key]; rec.fields[f.key] = cur === def ? !def : null; touch(); render(); const first = document.querySelector('[data-text]:not([id^="f-note"])'); if (rec.fields[f.key] !== null && first) first.focus(); });
-  main.querySelectorAll('[data-seg]').forEach(seg => seg.querySelectorAll('button').forEach(b => b.onclick = () => { const k = seg.dataset.seg, v = b.dataset.v === 'true'; rec.fields[k] = rec.fields[k] === v ? null : v; seg.querySelectorAll('button').forEach(x => x.classList.toggle('on', rec.fields[k] !== null && (x.dataset.v === 'true') === rec.fields[k])); touch(); }));
   main.querySelectorAll('[data-verdict]').forEach(seg => seg.querySelectorAll('button').forEach(b => b.onclick = () => {
-    const f = state.config.fields.find(x => x.key === seg.dataset.verdict); const cur = rec.fields[f.key];
-    const clear = cur === b.dataset.v; const opt = (f.options || []).find(o => o.value === b.dataset.v) || {};
+    const f = state.config.fields.find(x => x.key === seg.dataset.verdict); const clear = rec.fields[f.key] === b.dataset.v; const opt = (f.options || []).find(o => o.value === b.dataset.v) || {};
     for (const o of f.options || []) for (const k of Object.keys(o.sets || {})) rec.fields[k] = null;   // reset every field any option controls
-    rec.fields[f.key] = clear ? null : b.dataset.v;
-    if (!clear) Object.assign(rec.fields, opt.sets || {});
-    touch(); render();
-    if (!clear) { const first = document.querySelector('[data-text]:not([id="f-note"])'); if (first) first.focus(); }
+    rec.fields[f.key] = clear ? null : b.dataset.v; if (!clear) Object.assign(rec.fields, opt.sets || {});
+    touch(); render(); if (!clear) { const first = document.querySelector('.side [data-text]'); if (first) first.focus(); }
   }));
+  main.querySelectorAll('[data-seg]').forEach(seg => seg.querySelectorAll('button').forEach(b => b.onclick = () => { const k = seg.dataset.seg, v = b.dataset.v === 'true'; rec.fields[k] = rec.fields[k] === v ? null : v; seg.querySelectorAll('button').forEach(x => x.classList.toggle('on', rec.fields[k] !== null && (x.dataset.v === 'true') === rec.fields[k])); touch(); }));
   main.querySelectorAll('[data-select]').forEach(seg => seg.querySelectorAll('button').forEach(b => b.onclick = () => { const k = seg.dataset.select; rec.fields[k] = rec.fields[k] === b.dataset.v ? null : b.dataset.v; seg.querySelectorAll('button').forEach(x => x.classList.toggle('on', x.dataset.v === rec.fields[k])); touch(); }));
   main.querySelectorAll('[data-checks]').forEach(box => box.querySelectorAll('input').forEach(cb => cb.onchange = () => { rec.fields[box.dataset.checks] = [...box.querySelectorAll('input:checked')].map(x => x.value); touch(); }));
+  document.getElementById('noquote').onclick = () => { state.annotations.push({ id: `inline-${s.id}-${Date.now().toString(36)}`, kind: 'inline', item_id: s.id, block: null, start: null, end: null, quote: '', note: '', ts: now() }); scheduleSave(); render(); focusLastNote(); };
   main.querySelectorAll('.note').forEach(card => {
     const n = state.annotations.find(x => x.id === card.dataset.aid); if (!n) return;
-    card.querySelector('textarea').addEventListener('input', (e) => { n.note = e.target.value; n.ts = new Date().toISOString(); const mk = main.querySelector(`mark.hl[data-aid="${CSS.escape(n.id)}"]`); if (mk) mk.title = n.note; scheduleSave(); });
+    const ta = card.querySelector('textarea');
+    ta.addEventListener('input', (e) => { n.note = e.target.value; n.ts = now(); marksFor(n.id).forEach(mk => mk.title = n.note); scheduleSave(); renderDots(); setStatus(); });
+    ta.addEventListener('keydown', (e) => { if (e.key !== 'Enter' || e.shiftKey) return; e.preventDefault(); ta.blur(); clearTimeout(state.saveTimer); save(); });
     card.querySelector('.del').onclick = (e) => { e.stopPropagation(); state.annotations = state.annotations.filter(x => x.id !== n.id); scheduleSave(); render(); };
-    card.querySelector('.quote').onclick = () => { const mk = main.querySelector(`mark.hl[data-aid="${CSS.escape(n.id)}"]`); if (!mk) return; main.querySelectorAll('mark.hl.focus').forEach(x => x.classList.remove('focus')); mk.classList.add('focus'); mk.scrollIntoView({ block: 'center', behavior: 'smooth' }); };
+    card.querySelector('.quote').onclick = () => { if (n.quote) focusMark(n.id); };
+    card.addEventListener('mouseenter', () => marksFor(n.id).forEach(mk => mk.classList.add('focus')));
+    card.addEventListener('mouseleave', () => marksFor(n.id).forEach(mk => mk.classList.remove('focus')));
   });
 }
+function focusLastNote() { const cards = document.querySelectorAll('.note textarea'); const last = cards[cards.length - 1]; if (last) { last.focus(); last.scrollIntoView({ block: 'nearest' }); } }
 
-/* ---------- inline annotation ---------- */
+/* ---------- inline annotation: select text in the conversation, click the floating button ---------- */
 const fab = document.getElementById('fab');
 function hideFab() { fab.style.display = 'none'; state.pendingSel = null; }
+const blockOf = (node) => { const el = node && (node.nodeType === 1 ? node : node.parentElement); return el ? el.closest('[data-block]') : null; };
+function anchorOf(conv, range) {
+  const b1 = blockOf(range.startContainer), b2 = blockOf(range.endContainer); const scope = (b1 && b1 === b2) ? b1 : conv;
+  const pre = document.createRange(); pre.selectNodeContents(scope); pre.setEnd(range.startContainer, range.startOffset); const start = pre.toString().length;
+  return { block: scope === conv ? null : parseInt(b1.dataset.block, 10), start, end: start + range.toString().length };
+}
 document.addEventListener('mouseup', () => setTimeout(() => {
   const sel = window.getSelection(); const conv = document.querySelector('.conv');
   if (!sel || sel.isCollapsed || !conv || !conv.contains(sel.anchorNode) || !conv.contains(sel.focusNode)) return hideFab();
   const quote = sel.toString().trim(); if (quote.length < 2) return hideFab();
   const range = sel.getRangeAt(0); const rect = range.getBoundingClientRect();
-  state.pendingSel = { quote };
+  state.pendingSel = Object.assign({ quote }, anchorOf(conv, range));
   fab.style.display = 'block'; fab.style.left = `${Math.min(rect.right + window.scrollX + 6, window.innerWidth - 130)}px`; fab.style.top = `${rect.bottom + window.scrollY + 6}px`;
 }, 0));
 fab.addEventListener('mousedown', (e) => e.preventDefault());
 fab.onclick = () => {
   const p = state.pendingSel; if (!p) return hideFab();
   const s = state.samples[state.idx];
-  state.annotations.push({ id: `inline-${s.id}-${Date.now().toString(36)}`, kind: 'inline', item_id: s.id, quote: p.quote, note: '', ts: new Date().toISOString() });
-  window.getSelection().removeAllRanges(); hideFab(); scheduleSave(); render();
-  const cards = document.querySelectorAll('.note textarea'); const last = cards[cards.length - 1]; if (last) { last.focus(); last.scrollIntoView({ block: 'nearest' }); }
+  state.annotations.push({ id: `inline-${s.id}-${Date.now().toString(36)}`, kind: 'inline', item_id: s.id, block: p.block, start: p.start, end: p.end, quote: p.quote, note: '', ts: now() });
+  window.getSelection().removeAllRanges(); hideFab(); scheduleSave(); render(); focusLastNote();
 };
 window.addEventListener('hashchange', () => { const h = parseInt(location.hash.replace('#', ''), 10); if (Number.isFinite(h) && h - 1 !== state.idx) go(h - 1); });
 load();
