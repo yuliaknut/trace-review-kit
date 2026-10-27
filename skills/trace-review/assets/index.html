@@ -296,7 +296,7 @@ function renderReview(s) {
     ${state.config.instructions ? `<div class="criterion">${esc(state.config.instructions)}</div>` : ''}
     ${state.config.fields.map(f => visible(f, rec) ? renderField(f, rec) : '').join('')}
     <div class="row"><button id="noquote" title="for a failure with nothing to quote, e.g. a call that never happened">＋ note without a quote</button></div>
-    <div class="hint">Autosaves. Select text in the conversation to add an inline note; in a note <kbd>Enter</kbd> saves and leaves the box, <kbd>⇧</kbd><kbd>Enter</kbd> starts a new line. <kbd>←</kbd> <kbd>→</kbd> move between items${ringed().length ? ', <kbd>↑</kbd> <kbd>↓</kbd> between ringed ones' : ''}; while typing use <kbd>⌥</kbd>/<kbd>Alt</kbd> + arrows, or <kbd>Esc</kbd> to leave the box.</div>
+    <div class="hint">Autosaves. Select text in the conversation to add an inline note; in a note <kbd>Enter</kbd> saves and leaves the box, <kbd>⇧</kbd><kbd>Enter</kbd> starts a new line. <kbd>←</kbd> <kbd>→</kbd> move between items${ringed().length ? ', <kbd>↑</kbd> next ringed item and <kbd>↓</kbd> previous' : ''}; while typing use <kbd>⌥</kbd>/<kbd>Alt</kbd> + arrows, or <kbd>Esc</kbd> to leave the box.</div>
   </div></div>`;
 }
 function renderInline(s) {

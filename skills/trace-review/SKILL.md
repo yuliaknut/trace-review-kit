@@ -188,8 +188,9 @@ What the reviewer gets, so you can explain it:
 - **Tracker dots** across the top, one per item: dim until the item has been on screen for the
   seen delay, blue once it has a note, the verdict's colour once decided, a ring if the adapter
   flagged it. Click a dot to jump. The status line counts decided, note-only, and seen.
-- **Keyboard.** ← → move between items; ↑ ↓ move between ringed items only, with a toast saying
-  "ringed k of n". While typing, plain arrows edit the text; ⌥/Alt + arrow navigates; Esc leaves
+- **Keyboard.** ← → move between items. ↑ jumps to the next ringed item (rightward on the
+  tracker) and ↓ to the previous, wrapping at the ends, with a toast saying "ringed k of n"; up
+  means forward because that is how the reviewer read it, so do not flip it. While typing, plain arrows edit the text; ⌥/Alt + arrow navigates; Esc leaves
   the box. In a note, Enter saves and leaves, Shift+Enter is a newline.
 - **Tool cards** show the call name, arguments, and a one-line result summary; a click anywhere on
   the card shows or hides the full result. Open cards stay open while notes are added. Expand all
